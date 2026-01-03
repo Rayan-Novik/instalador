@@ -17,7 +17,7 @@ ENCRYPTION_KEY="a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8"
 ENCRYPTION_IV="a1b2c3d4e5f6a7b8"
 JWT_SECRET="umasenhasupersecretadificildeadivinhar12345"
 
-echo -e "${GREEN}>>> Iniciando instalador do Sistema Rayan Novik (Automação Total) <<<${NC}"
+echo -e "${GREEN}>>> Iniciando instalador do Sistema Rayan Novik (Docker + Cloudflare) <<<${NC}"
 
 # 1. Verificar Root
 if [ "$EUID" -ne 0 ]; then
@@ -102,14 +102,14 @@ EOF
 
 docker compose up -d
 
-# 6. CONFIGURAÇÃO DE DOMÍNIOS (A única parte interativa)
+# 6. CONFIGURAÇÃO DE DOMÍNIOS
 echo -e "${GREEN}>>> CONFIGURAÇÃO DE DOMÍNIOS <<<${NC}"
 echo "Informe apenas a URL base (sem /api). O script ajusta o resto."
 
 read -p "URL do Frontend (ex: https://ecommercerpool.shop): " USER_FRONT_URL
 read -p "URL do Backend (ex: https://back.ecommercerpool.shop): " USER_BACK_URL
 
-# Remove barra no final se o usuário digitar (para evitar erros tipo //.api)
+# Remove barra no final se houver
 FRONT_URL=${USER_FRONT_URL%/}
 BACK_URL=${USER_BACK_URL%/}
 API_URL="${BACK_URL}/api"
@@ -119,7 +119,7 @@ echo "Frontend: $FRONT_URL"
 echo "Backend:  $BACK_URL"
 echo "API URL:  $API_URL"
 
-# --- GERAR .ENV DO BACKEND ---
+# --- GERAR .ENV DO BACKEND (COMPLETO) ---
 echo -e "${YELLOW}Gerando env Backend...${NC}"
 mkdir -p backend/src
 cat <<EOF > backend/src/.env
@@ -247,7 +247,6 @@ networks:
     external: true
 EOF
 
-
 # --- GERAR ENV FRONTEND ---
 echo -e "${YELLOW}Gerando env Frontend...${NC}"
 cat <<EOF > frontend/.env
@@ -289,7 +288,7 @@ networks:
 EOF
 
 # 7. Build e Start
-echo -e "${YELLOW}>>> Construindo e iniciando serviços...${NC}"
+echo -e "${YELLOW}>>> Construindo serviços...${NC}"
 
 # Backend
 cd $BASE_DIR/backend
@@ -310,28 +309,32 @@ echo "Iniciando Admin..."
 docker compose build
 docker compose up -d
 
-# 8. Cloudflare Zero Trust
+# 8. Cloudflare Zero Trust (VIA DOCKER)
 echo -e "${GREEN}>>> CLOUDFLARE ZERO TRUST SETUP <<<${NC}"
-read -p "Deseja instalar e conectar o Cloudflare Tunnel? (s/n): " CF_OPT
+echo "Cole APENAS o Token (começa com eyJh...):"
+read -p "Token: " CF_TOKEN
 
-if [ "$CF_OPT" == "s" ]; then
-    echo "Baixando cloudflared..."
-    curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-    dpkg -i cloudflared.deb
-    rm cloudflared.deb
-
-    echo -e "${YELLOW}Crie o túnel no painel Zero Trust e copie o Token.${NC}"
-    read -p "Cole seu Token do Cloudflare: " CF_TOKEN
+if [ ! -z "$CF_TOKEN" ]; then
+    echo "Iniciando container do Cloudflare..."
     
-    if [ ! -z "$CF_TOKEN" ]; then
-        cloudflared service uninstall 2>/dev/null
-        cloudflared service install "$CF_TOKEN"
-        echo "Túnel ativo!"
-    fi
+    # Remove container antigo se existir
+    docker rm -f cloudflared 2>/dev/null
+
+    # Roda o túnel usando Docker (Método solicitado)
+    # Usamos --net=host para que o localhost:3000 funcione no painel
+    docker run -d \
+      --name cloudflared \
+      --restart always \
+      --net=host \
+      cloudflare/cloudflared:latest tunnel --no-autoupdate run --token "$CF_TOKEN"
+
+    echo -e "${GREEN}Cloudflare Tunnel ativado com sucesso!${NC}"
+else
+    echo "Token vazio, pulando Cloudflare."
 fi
 
 echo -e "${GREEN}>>> INSTALAÇÃO COMPLETA! <<<${NC}"
 echo "Configure seus Public Hostnames no Cloudflare para:"
-echo "Frontend -> localhost:3000"
-echo "Backend  -> localhost:5000"
-echo "Admin    -> localhost:3001"
+echo "Frontend -> http://localhost:3000"
+echo "Backend  -> http://localhost:5000"
+echo "Admin    -> http://localhost:3001"
