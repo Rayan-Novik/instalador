@@ -9,7 +9,7 @@ NC='\033[0m' # No Color
 BASE_DIR="/www"
 NETWORK_NAME="app_network"
 
-echo -e "${GREEN}>>> Iniciando instalador do Sistema Rayan Novik <<<${NC}"
+echo -e "${GREEN}>>> Iniciando instalador do Sistema Rayan Novik (v2 com Cloudflare) <<<${NC}"
 
 # 1. Verificar Root
 if [ "$EUID" -ne 0 ]; then
@@ -59,9 +59,14 @@ clone_or_pull "https://github.com/Rayan-Novik/backend.git" "backend"
 # 5. Configurar Banco de Dados Central (MySQL + PhpMyAdmin)
 echo -e "${YELLOW}>>> Configurando MySQL e PhpMyAdmin...${NC}"
 
-read -sp "Defina uma senha ROOT para o MySQL: " DB_ROOT_PASSWORD
-echo ""
-read -p "Defina o nome do banco de dados principal: " DB_NAME
+# --- ATUALIZAÇÃO: Valores Padrão (root / ecommerce_db) ---
+read -p "Defina uma senha ROOT para o MySQL [Padrão: root]: " INPUT_PASS
+DB_ROOT_PASSWORD=${INPUT_PASS:-root}
+
+read -p "Defina o nome do banco de dados [Padrão: ecommerce_db]: " INPUT_DB
+DB_NAME=${INPUT_DB:-ecommerce_db}
+
+echo -e "${GREEN}Usando Senha: '$DB_ROOT_PASSWORD' e Banco: '$DB_NAME'${NC}"
 echo ""
 
 # Cria docker-compose da infraestrutura
@@ -193,8 +198,8 @@ echo "Iniciando Backend..."
 docker compose build
 docker compose up -d
 
-# Aguarda o backend subir para rodar migrations se necessário (opcional)
-sleep 10
+# Aguarda o backend subir para rodar migrations se necessário
+sleep 5
 
 # Frontend
 cd $BASE_DIR/frontend
@@ -208,9 +213,32 @@ echo "Iniciando Admin..."
 docker compose build
 docker compose up -d
 
+# 8. Instalação do Cloudflare Zero Trust (NOVO)
+echo -e "${GREEN}>>> CLOUDFLARE ZERO TRUST SETUP <<<${NC}"
+read -p "Deseja instalar e conectar o agente do Cloudflare agora? (s/n): " CF_OPT
+
+if [ "$CF_OPT" == "s" ]; then
+    echo "Baixando cloudflared..."
+    curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+    dpkg -i cloudflared.deb
+    rm cloudflared.deb
+
+    echo -e "${YELLOW}Vá no painel Zero Trust > Access > Tunnels, crie um túnel e copie o token.${NC}"
+    read -p "Cole seu Token do Cloudflare aqui: " CF_TOKEN
+    
+    if [ ! -z "$CF_TOKEN" ]; then
+        # Remove instalação anterior se houver e instala a nova
+        cloudflared service uninstall 2>/dev/null
+        cloudflared service install "$CF_TOKEN"
+        echo "Cloudflare Tunnel instalado e rodando!"
+    else
+        echo "Token vazio, pulando etapa."
+    fi
+fi
+
 echo -e "${GREEN}>>> INSTALAÇÃO CONCLUÍDA! <<<${NC}"
-echo "MySQL/PhpMyAdmin rodando."
-echo "PhpMyAdmin porta: 8080"
-echo "Backend porta: 5000"
-echo "Frontend porta: 3000"
-echo "Admin porta: 3001"
+echo "Serviços rodando localmente (configure o Cloudflare Tunnel para expor):"
+echo "Backend: 5000"
+echo "Frontend: 3000"
+echo "Admin: 3001"
+echo "PhpMyAdmin: 8080"
