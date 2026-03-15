@@ -78,6 +78,8 @@ FRONTEND_URL=https://$DOMINIO_FRONTEND
 BACKEND_URL=https://$DOMINIO_BACKEND
 
 # --- BANCO DE DADOS (PRISMA) ---
+# O Prisma usa apenas esta linha para conectar. 
+# As variaveis DB_HOST, DB_USER, etc, foram removidas pois estão embutidas aqui.
 DATABASE_URL="mysql://root:root@127.0.0.1:3306/ecommerce_db"
 
 # --- SEGURANÇA ---
@@ -144,6 +146,16 @@ cd $BASE_DIR/admin
 cat <<EOF > .env
 REACT_APP_API_URL=https://$DOMINIO_BACKEND/api
 REACT_APP_ECOMMERCE_URL=https://$DOMINIO_FRONTEND
+
+PORT=3001
+
+JWT_SECRET=umasenhasupersecretadificildeadivinhar12345
+
+ENCRYPTION_KEY=a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8
+ENCRYPTION_IV=a1b2c3d4e5f6a7b8
+
+REACT_APP_ENCRYPTION_KEY=a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8
+REACT_APP_ENCRYPTION_IV=a1b2c3d4e5f6a7b8
 EOF
 
 npm install
@@ -156,8 +168,23 @@ echo "⚙️ Configurando Frontend (Loja)..."
 cd $BASE_DIR/frontend
 
 cat <<EOF > .env
+# ==========================================
+# VARIÁVEIS DO FRONTEND (Vite)
+# Tudo que começa com VITE_ fica visível no navegador
+# ==========================================
 VITE_API_URL=https://$DOMINIO_BACKEND/api
 VITE_ECOMMERCE_URL=https://$DOMINIO_FRONTEND
+
+VITE_ENCRYPTION_KEY=a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8
+VITE_ENCRYPTION_IV=a1b2c3d4e5f6a7b8
+
+# ==========================================
+# ⚠️ VARIÁVEIS DO BACKEND (Ignoradas pelo Vite)
+# ==========================================
+PORT=3001
+JWT_SECRET=umasenhasupersecretadificildeadivinhar12345
+ENCRYPTION_KEY=a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8
+ENCRYPTION_IV=a1b2c3d4e5f6a7b8
 EOF
 
 npm install
