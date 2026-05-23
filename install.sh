@@ -1,259 +1,302 @@
 #!/bin/bash
-
 # ==============================================================================
-# INSTALADOR AUTOMATIZADO - ARARINHA SAAS
+# Script de Instalação Automatizada - ArarinhaCloud
 # ==============================================================================
 
-echo "========================================================"
-echo "🚀 INICIANDO INSTALAÇÃO DO ARARINHA SAAS..."
-echo "========================================================"
+set -e # Para o script se algum comando falhar
 
-# 1. Coletando Domínios do Usuário
-read -p "🌐 Digite o domínio do BACKEND (ex: back.ararinhacloud.shop): " DOMINIO_BACKEND
-read -p "🌐 Digite o domínio do ADMIN (ex: admin.ararinhacloud.shop): " DOMINIO_ADMIN
-read -p "🌐 Digite o domínio da LOJA FRONTEND (ex: www.ararinhacloud.shop): " DOMINIO_FRONTEND
+echo "========================================"
+echo "🚀 Iniciando a instalação do sistema..."
+echo "========================================"
 
-# Verifica se o docker e docker-compose estão instalados
+# 1. Atualizar sistema e instalar dependências básicas
+echo "📦 Instalando dependências (Git, Curl)..."
+apt-get update -y
+apt-get install -y git curl sudo
+
+# 2. Instalar Docker e Docker Compose (se não estiver instalado)
 if ! command -v docker &> /dev/null; then
-    echo "🐳 Instalando Docker..."
-    apt update && apt install docker.io docker-compose -y
-    systemctl start docker
-    systemctl enable docker
+    echo "🐳 Instalando o Docker..."
+    curl -fsSL https://get.docker.com -o get-docker.sh
+    sh get-docker.sh
+    rm get-docker.sh
+else
+    echo "✅ Docker já está instalado."
 fi
 
-# Diretório base
-BASE_DIR="/var/www"
-mkdir -p $BASE_DIR
-cd $BASE_DIR
+# 3. Criar estrutura de diretórios
+echo "📂 Criando a estrutura de pastas em /var/www..."
+mkdir -p /var/www/proxy
+
+cd /var/www
+
+# 4. Clonar os repositórios (Se a pasta já existir, apaga e clona de novo)
+echo "📥 Clonando os repositórios do GitHub..."
+
+for repo in admin frontend backend; do
+    if [ -d "$repo" ]; then
+        echo "⚠️ Pasta $repo já existe. Removendo para baixar a versão mais recente..."
+        rm -rf "$repo"
+    fi
+    git clone https://github.com/Rayan-Novik/$repo
+done
 
 # ==============================================================================
-# 2. CLONANDO REPOSITÓRIOS
+# INJETAR ARQUIVOS DE CONFIGURAÇÃO
+# Nota: Usamos 'EOF' com aspas simples para impedir que o bash expanda variáveis como $host
 # ==============================================================================
-echo "⬇️ Clonando repositórios do GitHub para $BASE_DIR..."
-# Remove as pastas caso o script seja rodado mais de uma vez para evitar erro de clone
-rm -rf backend admin frontend 
 
-git clone https://github.com/Rayan-Novik/backend.git
-git clone https://github.com/Rayan-Novik/admin.git
-git clone https://github.com/Rayan-Novik/frontend.git
+echo "⚙️ Configurando arquivos do Proxy Principal..."
+cat << 'EOF' > /var/www/proxy/nginx.conf
+worker_processes 1;
 
-# ==============================================================================
-# 3. DOCKER MYSQL (Configurado dentro da pasta backend)
-# ==============================================================================
-echo "🗄️ Configurando Banco de Dados MySQL via Docker..."
-cd $BASE_DIR/backend
+events {
+    worker_connections 1024;
+}
 
-cat <<EOF > docker-compose.yml
+http {
+    # =========================
+    # ADMIN
+    # =========================
+    server {
+        listen 80;
+        server_name admin.ararinhacloud.shop;
+
+        location / {
+            proxy_pass http://admin-app:80;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+    }
+
+    # =========================
+    # ROOT DOMAIN
+    # =========================
+    server {
+        listen 80;
+        server_name ararinhacloud.shop;
+
+        location / {
+            proxy_pass http://frontend-app:80;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+    }
+
+    # =========================
+    # TENANTS
+    # =========================
+    server {
+        listen 80;
+        server_name ~^(?!admin\.)(?<subdomain>.+)\.ararinhacloud\.shop$;
+
+        location / {
+            error_page 418 = @bot;
+
+            if ($http_user_agent ~* "whatsapp|facebookexternalhit|twitterbot|linkedinbot|telegrambot|discordbot|bot|crawler|spider|scraper|preview") {
+                return 418;
+            }
+
+            proxy_pass http://frontend-app:80;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location @bot {
+            rewrite ^ /api/public/render-og break;
+            proxy_pass http://host.docker.internal:5000;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+    }
+}
+EOF
+
+echo "⚙️ Configurando arquivos do Admin..."
+cat << 'EOF' > /var/www/admin/Dockerfile
+# ETAPA 1: Build do React usando o Node
+FROM node:18 AS build
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm install --legacy-peer-deps
+COPY . .
+RUN npm run build 
+
+# ETAPA 2: Servidor Nginx para rodar a aplicação
+FROM nginx:alpine
+RUN rm /etc/nginx/conf.d/default.conf
+COPY nginx.conf /etc/nginx/conf.d/
+COPY --from=build /app/build /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+EOF
+
+cat << 'EOF' > /var/www/admin/nginx.conf
+server {
+    listen 80;
+    location / {
+        root /usr/share/nginx/html;
+        index index.html index.htm;
+        try_files $uri $uri/ /index.html;
+    }
+}
+EOF
+
+echo "⚙️ Configurando arquivos do Frontend..."
+cat << 'EOF' > /var/www/frontend/Dockerfile
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+RUN npm run build
+
+# --------- NGINX ---------
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+EOF
+
+cat << 'EOF' > /var/www/frontend/nginx.conf
+server {
+    listen 80;
+    location / {
+        root /usr/share/nginx/html;
+        index index.html index.htm;
+        try_files $uri $uri/ /index.html;
+    }
+}
+EOF
+
+echo "⚙️ Configurando docker-compose principal (Frontend, Admin e Proxy)..."
+cat << 'EOF' > /var/www/docker-compose.yml
 version: '3.8'
+
+services:
+  proxy:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./proxy/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - admin-app
+      - frontend-app
+
+  admin-app:
+    build: 
+      context: ./admin
+    expose:
+      - "80"
+
+  frontend-app:
+    build: 
+      context: ./frontend
+    expose:
+      - "80"
+EOF
+
+echo "⚙️ Configurando docker-compose do Backend..."
+cat << 'EOF' > /var/www/backend/docker-compose.yml
+version: '3.8'
+
 services:
   mysql:
     image: mysql:8.0
     container_name: ararinha_mysql
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_PASSWORD: Gd1700al@@
       MYSQL_DATABASE: ecommerce_db
     ports:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: ararinha_phpmyadmin
+    restart: always
+    ports:
+      - "8080:80"
+    environment:
+      PMA_HOST: mysql
+      PMA_USER: root
+      PMA_PASSWORD: Gd1700al@@
+    depends_on:
+      - mysql
+
+  backend:
+    build: .
+    container_name: ararinha_backend
+    restart: always
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mysql
+    env_file:
+      - .env
+
 volumes:
   mysql_data:
 EOF
 
-docker-compose up -d
-
-echo "⏳ Aguardando o MySQL iniciar (15 segundos)..."
-sleep 15
+# Garante que um arquivo .env vazio exista para o docker não reclamar
+touch /var/www/backend/.env
 
 # ==============================================================================
-# 4. CONFIGURANDO BACKEND
+# CLOUDFLARED INSTALLATION
 # ==============================================================================
-echo "⚙️ Configurando Backend..."
 
-cat <<EOF > .env
-# --- CONFIGURAÇÕES DO SERVIDOR ---
-SERVER_PORT=5000
-FRONTEND_URL=https://$DOMINIO_FRONTEND
-BACKEND_URL=https://$DOMINIO_BACKEND
+echo "☁️ Instalando o Cloudflared Tunnel..."
 
-# --- BANCO DE DADOS (PRISMA) ---
-# O Prisma usa apenas esta linha para conectar. 
-# As variaveis DB_HOST, DB_USER, etc, foram removidas pois estão embutidas aqui.
-DATABASE_URL="mysql://root:root@127.0.0.1:3306/ecommerce_db"
+sudo mkdir -p --mode=0755 /usr/share/keyrings
+curl -fsSL https://pkg.cloudflare.com/cloudflare-public-v2.gpg | sudo tee /usr/share/keyrings/cloudflare-public-v2.gpg >/dev/null
 
-# --- SEGURANÇA ---
-JWT_SECRET=umasenhasupersecretadificildeadivinhar12345
-ENCRYPTION_KEY=a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8
-ENCRYPTION_IV=a1b2c3d4e5f6a7b8
+echo 'deb [signed-by=/usr/share/keyrings/cloudflare-public-v2.gpg] https://pkg.cloudflare.com/cloudflared any main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
 
-# --- INTEGRAÇÕES ---
-MERCADOPAGO_API_URL=https://api.mercadopago.com
-MERCADO_LIVRE_ACCESS_TOKEN=your_ml_api_key_here
-GOOGLE_API_KEY=your_google_api_key_here
-GROQ_API_KEY=gsk_your_groq_api_key_here
-ABACATEPAY_API_KEY=your_abacatepay_api_key_here
-EOF
+sudo apt-get update
+sudo apt-get install cloudflared -y
 
-npm install
+echo ""
+echo "==================================================================="
+echo "🔑 POR FAVOR, INSIRA SEU TOKEN DO CLOUDFLARE TUNNEL:"
+echo "(Cole o código que começa com eyJ... e aperte ENTER)"
+echo "==================================================================="
+read CF_TOKEN
 
-# Prisma (Sincroniza Banco de Dados)
-echo "🗃️ Sincronizando Schema Prisma..."
-npx prisma generate
-npx prisma db push
-
-# Criando Script temporário para injetar o primeiro Tenant
-cat <<EOF > seed_tenant.js
-import { PrismaClient } from '@prisma/client';
-const prisma = new PrismaClient();
-
-async function main() {
-  const tenantExists = await prisma.tenants.findUnique({ where: { slug: 'admin' } });
-  
-  if (!tenantExists) {
-    await prisma.tenants.create({
-      data: {
-        slug: 'admin',
-        nome_fantasia: 'Ararinha Matriz',
-        plano: 'PRO',
-        status_assinatura: 'ATIVO',
-        dominio_customizado: '$DOMINIO_FRONTEND'
-      }
-    });
-    console.log('✅ Tenant inicial criado!');
-  } else {
-    console.log('⚠️ Tenant já existe.');
-  }
-}
-main().catch(e => console.error(e)).finally(async () => await prisma.\$disconnect());
-EOF
-
-# Executa o seed e apaga o arquivo
-node seed_tenant.js
-rm seed_tenant.js
-
-# PM2
-echo "🚀 Iniciando Backend no PM2..."
-pm2 start server.js --name "ararinha-backend"
-pm2 save
+if [ -n "$CF_TOKEN" ]; then
+    echo "⏳ Configurando o serviço do Cloudflared..."
+    sudo cloudflared service install $CF_TOKEN || echo "⚠️ Aviso: O cloudflared pode já estar instalado ou o token é inválido."
+else
+    echo "❌ Nenhum token fornecido. O Cloudflared não foi configurado."
+fi
 
 # ==============================================================================
-# 5. CONFIGURANDO ADMIN
+# SUBINDO OS CONTAINERS
 # ==============================================================================
-echo "⚙️ Configurando Admin (Painel)..."
-cd $BASE_DIR/admin
 
-cat <<EOF > .env
-REACT_APP_API_URL=https://$DOMINIO_BACKEND/api
-REACT_APP_ECOMMERCE_URL=https://$DOMINIO_FRONTEND
+echo "🐳 Subindo o ambiente de Backend (MySQL, PHPMyAdmin, API)..."
+cd /var/www/backend
+docker compose up -d --build
 
-PORT=3001
+echo "🐳 Subindo o ambiente Web (Admin, Frontend, Nginx Proxy)..."
+cd /var/www
+docker compose up -d --build
 
-JWT_SECRET=umasenhasupersecretadificildeadivinhar12345
-
-ENCRYPTION_KEY=a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8
-ENCRYPTION_IV=a1b2c3d4e5f6a7b8
-
-REACT_APP_ENCRYPTION_KEY=a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8
-REACT_APP_ENCRYPTION_IV=a1b2c3d4e5f6a7b8
-EOF
-
-npm install
-npm run build
-
-# ==============================================================================
-# 6. CONFIGURANDO FRONTEND
-# ==============================================================================
-echo "⚙️ Configurando Frontend (Loja)..."
-cd $BASE_DIR/frontend
-
-cat <<EOF > .env
-# ==========================================
-# VARIÁVEIS DO FRONTEND (Vite)
-# Tudo que começa com VITE_ fica visível no navegador
-# ==========================================
-VITE_API_URL=https://$DOMINIO_BACKEND/api
-VITE_ECOMMERCE_URL=https://$DOMINIO_FRONTEND
-
-VITE_ENCRYPTION_KEY=a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8
-VITE_ENCRYPTION_IV=a1b2c3d4e5f6a7b8
-
-# ==========================================
-# ⚠️ VARIÁVEIS DO BACKEND (Ignoradas pelo Vite)
-# ==========================================
-PORT=3001
-JWT_SECRET=umasenhasupersecretadificildeadivinhar12345
-ENCRYPTION_KEY=a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8
-ENCRYPTION_IV=a1b2c3d4e5f6a7b8
-EOF
-
-npm install
-npm run build
-
-# ==============================================================================
-# 7. CONFIGURANDO NGINX
-# ==============================================================================
-echo "🌐 Configurando Nginx..."
-
-# Nginx BACKEND
-cat <<EOF > /etc/nginx/sites-available/backend
-server {
-    listen 80;
-    server_name $DOMINIO_BACKEND;
-
-    location / {
-        proxy_pass http://localhost:5000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_cache_bypass \$http_upgrade;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-
-# Nginx ADMIN
-cat <<EOF > /etc/nginx/sites-available/admin
-server {
-    listen 80;
-    server_name $DOMINIO_ADMIN;
-    root $BASE_DIR/admin/build; # CRA padrao
-    index index.html;
-
-    location / {
-        try_files \$uri \$uri/ /index.html;
-    }
-}
-EOF
-
-# Nginx FRONTEND
-cat <<EOF > /etc/nginx/sites-available/frontend
-server {
-    listen 80;
-    server_name $DOMINIO_FRONTEND;
-    root $BASE_DIR/frontend/dist; # Vite padrao
-    index index.html;
-
-    location / {
-        try_files \$uri \$uri/ /index.html;
-    }
-}
-EOF
-
-# Ativando e reiniciando Nginx
-ln -sf /etc/nginx/sites-available/backend /etc/nginx/sites-enabled/
-ln -sf /etc/nginx/sites-available/admin /etc/nginx/sites-enabled/
-ln -sf /etc/nginx/sites-available/frontend /etc/nginx/sites-enabled/
-
-nginx -t && systemctl restart nginx
-
-echo "========================================================"
-echo "🎉 INSTALAÇÃO CONCLUÍDA COM SUCESSO!"
-echo "========================================================"
-echo "Pastas criadas em: /var/www/admin | /var/www/backend | /var/www/frontend"
-echo "Back-end rodando na porta 5000 via PM2."
-echo "Front-end e Admin preparados no Nginx."
-echo "⚠️ Lembrete: Configure as rotas desses 3 domínios apontando para o seu localhost:80 no Cloudflare Zero Trust!"
+echo ""
+echo "==================================================================="
+echo "✅ INSTALAÇÃO CONCLUÍDA COM SUCESSO!"
+echo "==================================================================="
+echo "-> Verifique se os containers do backend estão rodando: 'cd /var/www/backend && docker compose ps'"
+echo "-> Verifique se os containers web estão rodando: 'cd /var/www && docker compose ps'"
+echo "⚠️ Lembre-se de configurar o arquivo /var/www/backend/.env com as variáveis do backend."
